@@ -1,6 +1,7 @@
 """
 Модуль управления процессами Windows
 Расширенный диспетчер задач с заморозкой процессов и снятием флага "критический"
+Методы взяты из SimpleUnlocker (TMCore.cs)
 """
 
 import ctypes
@@ -30,6 +31,8 @@ REALTIME_PRIORITY_CLASS = 0x00000100
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
+# Импорты из ntdll (взято из SimpleUnlocker Utils.cs)
+ntdll = ctypes.windll.ntdll
 
 def run_hidden_command(cmd: str, capture_output: bool = False) -> subprocess.CompletedProcess:
     """Выполнить команду без показа окна консоли"""
@@ -63,13 +66,12 @@ def run_hidden_powershell(ps_command: str, capture_output: bool = True) -> subpr
 
 
 class ProcessManager:
-    """Класс для управления процессами"""
+    """Класс для управления процессами (методы из SimpleUnlocker TMCore.cs)"""
     
     def __init__(self):
         self.kernel32 = ctypes.windll.kernel32
-        self.ntdll = ctypes.windll.ntdll
-        self.psapi = ctypes.windll.psapi
-    
+        self.ntdll = ntdll
+
     def get_processes(self) -> list:
         """Получить список всех процессов"""
         processes = []
@@ -95,19 +97,20 @@ class ProcessManager:
                             })
                         except (ValueError, IndexError):
                             pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Ошибка получения процессов: {e}")
 
         return processes
-    
+
     def open_process(self, pid: int, access: int = PROCESS_QUERY_INFORMATION) -> int:
         """Открыть дескриптор процесса"""
         try:
             handle = self.kernel32.OpenProcess(access, False, pid)
             return handle
-        except Exception:
+        except Exception as e:
+            logger.error(f"Ошибка открытия процесса {pid}: {e}")
             return 0
-    
+
     def close_process(self, handle: int) -> bool:
         """Закрыть дескриптор процесса"""
         try:
@@ -115,7 +118,7 @@ class ProcessManager:
             return True
         except Exception:
             return False
-    
+
     def terminate_process(self, pid: int) -> bool:
         """Завершить процесс"""
         try:
@@ -123,49 +126,98 @@ class ProcessManager:
             if handle:
                 result = self.kernel32.TerminateProcess(handle, 0)
                 self.close_process(handle)
+                logger.info(f"Процесс {pid} завершён")
                 return result != 0
             return False
-        except Exception:
+        except Exception as e:
+            logger.error(f"Ошибка завершения процесса {pid}: {e}")
             return False
-    
+
     def suspend_process(self, pid: int) -> bool:
         """
-        Заморозить процесс (suspend)
-        Примечание: требует дополнительных вызовов для потоков
+        Заморозить процесс (метод из SimpleUnlocker)
+        Использует NtSuspendProcess из ntdll.dll
         """
         try:
-            # Получаем все потоки процесса
-            ps_command = f'''
-            Get-WmiObject Win32_Thread | Where-Object {{ $_.ProcessHandle -eq {pid} }} | ForEach-Object {{
-                $h = [VirusBypass.ProcessManager]::OpenProcess(0x0800, $false, {pid})
-                if ($h -ne 0) {{
-                    [VirusBypass.ProcessManager]::SuspendThreadById($h)
-                    [VirusBypass.ProcessManager]::CloseHandle($h)
-                }}
-            }}
-            '''
-            # Упрощённая версия через NtSuspendProcess
             handle = self.open_process(pid, PROCESS_SUSPEND_RESUME)
             if handle:
+                # NtSuspendProcess из SimpleUnlocker
                 result = self.ntdll.NtSuspendProcess(handle)
                 self.close_process(handle)
-                return result == 0
+                if result == 0:
+                    logger.info(f"Процесс {pid} заморожен")
+                    return True
             return False
-        except Exception:
+        except Exception as e:
+            logger.error(f"Ошибка заморозки процесса {pid}: {e}")
             return False
-    
+
     def resume_process(self, pid: int) -> bool:
-        """Разморозить процесс (resume)"""
+        """
+        Разморозить процесс (метод из SimpleUnlocker)
+        Использует NtResumeProcess из ntdll.dll
+        """
         try:
             handle = self.open_process(pid, PROCESS_SUSPEND_RESUME)
             if handle:
+                # NtResumeProcess из SimpleUnlocker
                 result = self.ntdll.NtResumeProcess(handle)
                 self.close_process(handle)
-                return result == 0
+                if result == 0:
+                    logger.info(f"Процесс {pid} разморожен")
+                    return True
             return False
-        except Exception:
+        except Exception as e:
+            logger.error(f"Ошибка разморозки процесса {pid}: {e}")
             return False
-    
+
+    def is_process_critical(self, pid: int) -> bool:
+        """
+        Проверить является ли процесс критическим (метод из SimpleUnlocker TMCore.cs)
+        Использует NtQueryInformationProcess с ProcessBreakOnTermination (29)
+        """
+        try:
+            handle = self.open_process(pid, PROCESS_QUERY_INFORMATION)
+            if handle:
+                value = ctypes.c_uint(0)
+                size = ctypes.c_int()
+                # ProcessBreakOnTermination = 29
+                result = self.ntdll.NtQueryInformationProcess(handle, 29, ctypes.byref(value), ctypes.sizeof(ctypes.c_uint), ctypes.byref(size))
+                self.close_process(handle)
+                if result == 0 and size.value == ctypes.sizeof(ctypes.c_uint):
+                    is_critical = value.value != 0
+                    logger.debug(f"Процесс {pid} критический: {is_critical}")
+                    return is_critical
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка проверки критичности процесса {pid}: {e}")
+            return False
+
+    def remove_critical_flag(self, pid: int) -> bool:
+        """
+        Снять флаг "критический процесс" (метод из SimpleUnlocker TMCore.cs)
+        Использует NtSetInformationProcess с ProcessBreakOnTermination (0x1D = 29)
+        """
+        try:
+            # ProcessBreakOnTermination = 0x1D (29)
+            BreakOnTermination = 0x1D
+            
+            handle = self.open_process(pid, PROCESS_SET_INFORMATION)
+            if handle:
+                is_critical = ctypes.c_int(0)  # 0 = не критический
+                # NtSetInformationProcess из SimpleUnlocker
+                result = self.ntdll.NtSetInformationProcess(handle, BreakOnTermination, ctypes.byref(is_critical), ctypes.sizeof(ctypes.c_int))
+                self.close_process(handle)
+                if result == 0:
+                    logger.info(f"Критический флаг снят с процесса {pid}")
+                    return True
+                else:
+                    logger.error(f"Ошибка снятия флага критичности. NTSTATUS: {result:X}")
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка снятия флага критичности: {e}")
+            return False
+
     def set_priority(self, pid: int, priority: int) -> bool:
         """Установить приоритет процесса"""
         try:
@@ -175,121 +227,8 @@ class ProcessManager:
                 self.close_process(handle)
                 return result != 0
             return False
-        except Exception:
-            return False
-    
-    def get_process_details(self, pid: int) -> dict:
-        """Получить детальную информацию о процессе"""
-        details = {
-            'pid': pid,
-            'name': '',
-            'path': '',
-            'memory_usage': 0,
-            'thread_count': 0,
-            'is_critical': False
-        }
-        
-        try:
-            # Получаем имя и путь через WMI
-            ps_command = f'''
-            Get-CimInstance Win32_Process -Filter "ProcessId = {pid}" | Select-Object Name, ExecutablePath, WorkingSetSize, ThreadCount | ConvertTo-Json
-            '''
-            result = run_hidden_powershell(ps_command)
-
-            import json
-            try:
-                data = json.loads(result.stdout)
-                if data:
-                    details['name'] = data.get('Name', '')
-                    details['path'] = data.get('ExecutablePath', '')
-                    details['memory_usage'] = data.get('WorkingSetSize', 0)
-                    details['thread_count'] = data.get('ThreadCount', 0)
-            except json.JSONDecodeError:
-                pass
-
-            # Проверяем, является ли процесс критическим
-            details['is_critical'] = self._is_critical_process(pid)
-
-        except Exception:
-            pass
-
-        return details
-    
-    def _is_critical_process(self, pid: int) -> bool:
-        """Проверить, является ли процесс критическим"""
-        # Список критических системных процессов
-        critical_processes = [
-            'system', 'smss.exe', 'csrss.exe', 'wininit.exe',
-            'services.exe', 'lsass.exe', 'lsm.exe', 'svchost.exe',
-            'explorer.exe', 'winlogon.exe'
-        ]
-        
-        processes = self.get_processes()
-        for proc in processes:
-            if proc['pid'] == pid:
-                return proc['name'].lower() in critical_processes
-        
-        return False
-    
-    def remove_critical_flag(self, pid: int) -> bool:
-        """
-        Снять флаг "критический процесс"
-        ВНИМАНИЕ: Может привести к нестабильности системы!
-        Использует прямой вызов через C# код
-        """
-        try:
-            # Используем C# код для прямого вызова API
-            ps_script = f'''
-            $code = @'
-            using System;
-            using System.Runtime.InteropServices;
-            public class ProcessUtils {{
-                [DllImport("kernel32.dll", SetLastError = true)]
-                public static extern IntPtr OpenProcess(int dwDesiredAccess, bool bInheritHandle, int dwProcessId);
-                
-                [DllImport("kernel32.dll", SetLastError = true)]
-                public static extern bool CloseHandle(IntPtr hObject);
-                
-                [DllImport("ntdll.dll")]
-                public static extern int NtSetInformationProcess(IntPtr hProcess, int processInformationClass, ref int processInformation, int processInformationLength);
-                
-                public static bool RemoveCriticalFlag(int pid) {{
-                    const int PROCESS_QUERY_INFORMATION = 0x0400;
-                    const int PROCESS_SET_INFORMATION = 0x0200;
-                    const int PROCESS_VM_READ = 0x0010;
-                    const int ProcessBreakOnTermination = 0x1D;
-                    
-                    int access = PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_VM_READ;
-                    IntPtr hProcess = OpenProcess(access, false, pid);
-                    
-                    if (hProcess == IntPtr.Zero) {{
-                        Console.WriteLine("ERROR: Cannot open process");
-                        return false;
-                    }}
-                    
-                    int value = 0; // 0 = не критический
-                    int result = NtSetInformationProcess(hProcess, ProcessBreakOnTermination, ref value, 4);
-                    CloseHandle(hProcess);
-                    
-                    if (result == 0) {{
-                        Console.WriteLine("SUCCESS");
-                        return true;
-                    }} else {{
-                        Console.WriteLine($"ERROR: NTSTATUS={{result:X8}}");
-                        return false;
-                    }}
-                }}
-            }}
-'@
-
-            Add-Type -TypeDefinition $code -Language CSharp -Force
-            [ProcessUtils]::RemoveCriticalFlag({pid})
-            '''
-            
-            result = run_hidden_powershell(ps_script)
-            return 'SUCCESS' in result.stdout or result.returncode == 0
         except Exception as e:
-            print(f"Ошибка снятия флага критичности: {e}")
+            logger.error(f"Ошибка установки приоритета: {e}")
             return False
 
     def kill_process_tree(self, pid: int) -> bool:
@@ -305,7 +244,8 @@ class ProcessManager:
 
             # Убиваем основной процесс
             return self.terminate_process(pid)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Ошибка удаления дерева процессов: {e}")
             return False
 
     def find_process_by_name(self, name: str) -> list:
@@ -319,37 +259,6 @@ class ProcessManager:
                 result.append(proc)
 
         return result
-
-    def get_process_handles(self, pid: int) -> list:
-        """Получить список открытых файловых дескрипторов процесса"""
-        handles = []
-
-        try:
-            # Используем handle.exe от Sysinternals (если доступен)
-            result = run_hidden_command('handle -p {} -accepteula'.format(pid), capture_output=True)
-
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'File' in line or 'Directory' in line:
-                        handles.append(line.strip())
-        except Exception:
-            pass
-
-        return handles
-    
-    def close_process_handle(self, pid: int, handle_value: int) -> bool:
-        """Закрыть конкретный дескриптор процесса"""
-        try:
-            # Требуются права отладки
-            handle = self.open_process(pid, PROCESS_DUP_HANDLE)
-            if handle:
-                self.kernel32.CloseHandle(handle_value)
-                self.close_process(handle)
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Ошибка закрытия дескриптора {handle_value}: {e}")
-            return False
 
 
 # Функции для быстрого доступа

@@ -8,6 +8,23 @@ import os
 import subprocess
 import shutil
 import ctypes
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def run_hidden_powershell(ps_command: str, capture_output: bool = True) -> subprocess.CompletedProcess:
+    """Выполнить PowerShell команду без показа окна"""
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+
+    return subprocess.run(
+        ['powershell', '-ExecutionPolicy', 'Bypass', '-Command', ps_command],
+        capture_output=capture_output,
+        text=True,
+        startupinfo=startupinfo
+    )
 
 
 class RestrictionsManager:
@@ -75,12 +92,49 @@ class RestrictionsManager:
     def remove_scancode_map(self) -> bool:
         """Удалить ScancodeMap (сбросить переназначение клавиш)"""
         try:
+            # Сначала берём ownership через PowerShell
+            ps_script = '''
+            $ErrorActionPreference = "SilentlyContinue"
+            $keyPath = "SYSTEM\\CurrentControlSet\\Control\\Keyboard Layout"
+            $fullPath = "HKLM:\\$keyPath"
+            
+            try {
+                # Берём ownership
+                $acl = Get-Acl $fullPath
+                $adminAccount = New-Object System.Security.Principal.NTAccount("Administrators")
+                $acl.SetOwner($adminAccount)
+                Set-Acl $fullPath -AclObject $acl
+                
+                # Даём полные права
+                $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
+                    $adminAccount,
+                    "FullControl",
+                    "Allow"
+                )
+                $acl.ResetAccessRule($rule)
+                Set-Acl $fullPath -AclObject $acl
+            } catch {}
+            '''
+            run_hidden_powershell(ps_script)
+            
+            # Теперь удаляем ключ
             hive, path = self.RESTRICTION_KEYS['ScancodeMap']
-            key = winreg.OpenKey(hive, path, 0, winreg.KEY_SET_VALUE)
-            winreg.DeleteValue(key, 'Scancode Map')
+            key = winreg.OpenKey(hive, path, 0, winreg.KEY_ALL_ACCESS)
+            try:
+                winreg.DeleteValue(key, 'Scancode Map')
+                winreg.CloseKey(key)
+                return True
+            except OSError:
+                pass
             winreg.CloseKey(key)
+            
+            # Пробуем через reg delete
+            subprocess.run(['reg', 'delete', r'HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layout', '/v', 'Scancode Map', '/f'], 
+                          capture_output=True)
             return True
-        except OSError:
+            
+        except Exception as e:
+            logger.error(f"Ошибка удаления ScancodeMap: {e}")
             return False
     
     def set_scancode_map(self, mapping: dict) -> bool:
@@ -365,7 +419,7 @@ class RestrictionsManager:
             return False
     
     # ==================== ОБЩИЕ ОГРАНИЧЕНИЯ ====================
-    
+
     def get_all_restrictions(self) -> dict:
         """Получить все активные ограничения"""
         return {
@@ -374,20 +428,97 @@ class RestrictionsManager:
             'disallow_run': self.get_disallow_run(),
             'hosts_content': self.get_hosts_content()
         }
-    
+
+    def remove_group_policies(self) -> int:
+        """Удалить политики Group Policy"""
+        count = 0
+        policy_paths = [
+            (winreg.HKEY_CURRENT_USER, r'Software\Policies\Microsoft\Windows'),
+            (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Policies\Microsoft\Windows'),
+        ]
+
+        for hive, base_path in policy_paths:
+            try:
+                # Удаляем все подразделы в Policies\Microsoft\Windows
+                self._delete_key_tree(hive, base_path)
+                count += 1
+            except Exception:
+                pass
+
+        return count
+
+    def _delete_key_tree(self, hive, key_path):
+        """Рекурсивно удалить все подразделы ключа"""
+        try:
+            # Сначала получаем все подразделы
+            key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_ALL_ACCESS)
+            subkeys = []
+            i = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(key, i)
+                    subkeys.append(subkey_name)
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+
+            # Рекурсивно удаляем подразделы
+            for subkey in subkeys:
+                subkey_path = f"{key_path}\\{subkey}"
+                self._delete_key_tree(hive, subkey_path)
+
+            # Теперь удаляем содержимое текущего ключа
+            try:
+                key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_ALL_ACCESS)
+                values = []
+                i = 0
+                while True:
+                    try:
+                        value_name, _, _ = winreg.EnumValue(key, i)
+                        values.append(value_name)
+                        i += 1
+                    except OSError:
+                        break
+                winreg.CloseKey(key)
+
+                # Удаляем все значения
+                key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_SET_VALUE)
+                for value_name in values:
+                    try:
+                        winreg.DeleteValue(key, value_name)
+                    except OSError:
+                        pass
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+
     def remove_all_restrictions(self) -> dict:
         """Удалить все ограничения"""
         result = {
             'scancode_map': False,
             'debuggers': 0,
             'disallow_run': False,
-            'hosts': False
+            'hosts': False,
+            'group_policy': 0
         }
-        
+
         if self.remove_scancode_map():
             result['scancode_map'] = True
-        
+
         result['debuggers'] = self.remove_all_debuggers()
+
+        if self.remove_disallow_run():
+            result['disallow_run'] = True
+
+        if self.clean_hosts():
+            result['hosts'] = True
+
+        # Удаляем Group Policy
+        result['group_policy'] = self.remove_group_policies()
         
         if self.remove_disallow_run():
             result['disallow_run'] = True

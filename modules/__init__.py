@@ -15,33 +15,33 @@ __all__ = [
     'AutorunManager',
     'get_all_autoruns',
     'remove_autorun',
-    
+
     # Restrictions
     'RestrictionsManager',
     'get_restrictions',
     'remove_all_restrictions',
-    
+
     # System
     'SystemCommands',
     'restart_pc',
     'enter_winre',
     'run_sfc',
     'disable_test_mode',
-    
+
     # Recovery
     'WinREManager',
     'get_winre_status',
     'enable_winre',
     'disable_winre',
     'boot_to_winre',
-    
+
     # Processes
     'ProcessManager',
     'get_processes',
     'terminate_process',
     'suspend_process',
     'resume_process',
-    
+
     # Registry
     'RegistryEditor',
     'read_registry',

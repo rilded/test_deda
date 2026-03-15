@@ -1,6 +1,6 @@
 """
 DedHelper - Утилита для восстановления Windows после вирусов
-Версия 4.0 - с уникальным дизайном и исправленным Explorer++
+Версия 5.0 — как SimpleUnlocker но с уникальным дизайном
 
 Требования:
 - Python 3.8+
@@ -43,7 +43,7 @@ def run_hidden_command(cmd: str, capture_output: bool = False) -> subprocess.Com
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
-    
+
     return subprocess.run(
         cmd,
         shell=True,
@@ -59,7 +59,7 @@ def run_hidden_powershell(ps_command: str, capture_output: bool = True) -> subpr
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
-    
+
     return subprocess.run(
         ['powershell', '-ExecutionPolicy', 'Bypass', '-Command', ps_command],
         capture_output=capture_output,
@@ -128,14 +128,22 @@ def generate_random_name():
 
 class DedHelperApp:
     """Основной класс приложения с уникальным дизайном"""
-    
+
     def __init__(self, root):
         self.root = root
-        
+
         # Генерируем случайное имя для заголовка
         self.random_name = generate_random_name()
         self.root.title(f"{self.random_name}")
         
+        # Устанавливаем иконку окна
+        try:
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dedhelper.ico')
+            if os.path.exists(icon_path):
+                self.root.iconbitmap(icon_path)
+        except Exception as e:
+            logger.error(f"Ошибка установки иконки: {e}")
+
         self.root.geometry("1100x800")
         self.root.minsize(950, 700)
         
@@ -395,8 +403,8 @@ class DedHelperApp:
         """Создать вкладки"""
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
-        
-        # Вкладки (без смайликов)
+
+        # Вкладки
         tabs = [
             ("Автозагрузка", self._create_autorun_tab),
             ("Планировщик", self._create_scheduler_tab),
@@ -406,7 +414,7 @@ class DedHelperApp:
             ("Система", self._create_system_tab),
             ("Проводник", self._create_explorer_tab),
         ]
-        
+
         for name, create_func in tabs:
             frame = ttk.Frame(notebook)
             notebook.add(frame, text=name)
@@ -431,7 +439,7 @@ class DedHelperApp:
         # Версия справа
         version_label = tk.Label(
             status_bar,
-            text="DedHelper v4.3",
+            text="DedHelper v5.0",
             font=('Segoe UI', 9),
             bg=COLORS['bg_light'],
             fg=COLORS['text_sec'],
@@ -454,7 +462,8 @@ class DedHelperApp:
             messagebox.showerror("Ошибка", "Не удалось включить UAC")
     
     def _enter_winre(self):
-        if messagebox.askyesno("Подтверждение", "Перезагрузиться в WinRE?\nВсе несохранённые данные будут потеряны."):
+        if messagebox.askyesno("⚠ МГНОВЕННЫЙ ВХОД В WINRE", "Перезагрузиться в WinRE НЕМЕДЛЕННО?\n\n⚠ Все несохранённые данные будут потеряны!\n⚠ Перезагрузка произойдёт через 0 секунд!"):
+            logger.info("Мгновенный вход в WinRE")
             self.system_commands.enter_winre()
     
     def _clean_hosts(self):
@@ -466,10 +475,12 @@ class DedHelperApp:
     def _remove_all_restrictions(self):
         if messagebox.askyesno("Подтверждение", "Снять ВСЕ ограничения?"):
             result = self.restrictions_manager.remove_all_restrictions()
-            msg = f"Результат:\nScancodeMap: {'OK' if result['scancode_map'] else 'FAIL'}\n"
+            msg = f"Результат снятия ограничений:\n\n"
+            msg += f"ScancodeMap: {'✅ OK' if result['scancode_map'] else '❌ FAIL'}\n"
             msg += f"Debuggers: {result['debuggers']} удалено\n"
-            msg += f"DisallowRun: {'OK' if result['disallow_run'] else 'FAIL'}\n"
-            msg += f"Hosts: {'OK' if result['hosts'] else 'FAIL'}"
+            msg += f"DisallowRun: {'✅ OK' if result['disallow_run'] else '❌ FAIL'}\n"
+            msg += f"Hosts: {'✅ OK' if result['hosts'] else '❌ FAIL'}\n"
+            msg += f"Group Policy: {result['group_policy']} политик удалено"
             messagebox.showinfo("Результат", msg)
     
     def _clean_autorun(self):
@@ -1377,7 +1388,9 @@ class DedHelperApp:
         except Exception as e:
             logger.error(f"Ошибка при очистке корзины: {e}")
             messagebox.showerror("Ошибка", str(e))
-    
+
+    # ==================== ПРОВОДНИК ====================
+
     def _create_explorer_tab(self, parent):
         # Frame с явным цветом
         info_frame = tk.Frame(parent, bg=COLORS['bg_medium'])

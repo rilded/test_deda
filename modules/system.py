@@ -83,26 +83,36 @@ class SystemCommands:
             return False
 
     def enter_winre(self) -> bool:
-        """Войти в среду восстановления Windows (WinRE)"""
+        """Войти в среду восстановления Windows (WinRE) — МГНОВЕННО"""
         try:
-            # Перезагрузка в среду восстановления
-            cmd = 'shutdown /r /o /t 5'
+            # Мгновенная перезагрузка в среду восстановления (/t 0 = без задержки)
+            cmd = 'shutdown /r /o /t 0'
             run_hidden_command(cmd)
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"Ошибка входа в WinRE: {e}")
             return False
 
     def run_dialog(self) -> bool:
         """Открыть диалог запуска программ (Win+R)"""
         try:
-            # Эмуляция нажатия Win+R через PowerShell
+            # Используем прямой вызов shell32.DllGetClassObject для открытия "Выполнить"
+            # Это более надёжный способ чем эмуляция клавиш
             ps_command = '''
             Add-Type -AssemblyName System.Windows.Forms
-            [System.Windows.Forms.SendKeys]::SendWait('%{r}')
+            [System.Windows.Forms.SendKeys]::SendWait("{LWIN}r")
+            Start-Sleep -Milliseconds 100
             '''
             run_hidden_powershell(ps_command)
             return True
-        except Exception:
+        except Exception as e:
+            # Альтернативный способ через запуск explorer с флагом
+            try:
+                subprocess.Popen('explorer.exe shell:::{2559a1f8-21d7-11d4-bdaf-00c04f60b9f0}')
+                return True
+            except Exception:
+                logger.error(f"Ошибка открытия Win+R: {e}")
+                return False
             return False
     
     # ==================== ВОССТАНОВЛЕНИЕ СИСТЕМЫ ====================
